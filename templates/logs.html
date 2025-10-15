@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Development Logs Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .search-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .search-inputs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .search-inputs input {
+            flex: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .search-inputs button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .search-inputs button:hover {
+            background-color: #0056b3;
+        }
+        .stats {
+            background-color: #e7f3ff;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .answers-cell {
+            max-width: 300px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .timestamp {
+            white-space: nowrap;
+            font-size: 12px;
+        }
+        .dev-type {
+            font-weight: bold;
+            color: #0066cc;
+        }
+        .no-data {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            padding: 20px;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Development Logs Viewer</h1>
+        
+        <div class="search-section">
+            <h3>Search Logs</h3>
+            <div class="search-inputs">
+                <input type="text" id="devTypeSearch" placeholder="Search by development type (e.g., Carport, Shed)">
+                <input type="text" id="addressSearch" placeholder="Search by property address">
+                <button onclick="searchLogs()">Search</button>
+                <button onclick="loadAllLogs()">Show All</button>
+            </div>
+        </div>
+        
+        <div class="stats" id="stats">
+            <strong>Total Submissions: </strong><span id="totalCount">-</span>
+        </div>
+        
+        <div id="errorMessage" class="error" style="display: none;"></div>
+        <div id="loading" class="loading" style="display: none;">Loading logs...</div>
+        
+        <table id="logsTable" style="display: none;">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Development Type</th>
+                    <th>Property Address</th>
+                    <th>Answers (JSON)</th>
+                    <th>Reference Numbers</th>
+                    <th>Timestamp</th>
+                </tr>
+            </thead>
+            <tbody id="logsTableBody">
+            </tbody>
+        </table>
+        
+        <div id="noData" class="no-data" style="display: none;">
+            No submissions found.
+        </div>
+    </div>
+
+    <script>
+        // Load all logs when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            loadAllLogs();
+        });
+
+        async function loadAllLogs() {
+            showLoading();
+            try {
+                const response = await fetch('/logs');
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displayLogs(data.submissions, data.total_count);
+                } else {
+                    showError(data.error || 'Failed to load logs');
+                }
+            } catch (error) {
+                showError('Network error: ' + error.message);
+            }
+        }
+
+        async function searchLogs() {
+            const devType = document.getElementById('devTypeSearch').value;
+            const address = document.getElementById('addressSearch').value;
+            
+            if (!devType && !address) {
+                loadAllLogs();
+                return;
+            }
+            
+            showLoading();
+            try {
+                const params = new URLSearchParams();
+                if (devType) params.append('dev_type', devType);
+                if (address) params.append('address', address);
+                
+                const response = await fetch('/logs/search?' + params.toString());
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displayLogs(data.submissions, data.total_count);
+                } else {
+                    showError(data.error || 'Failed to search logs');
+                }
+            } catch (error) {
+                showError('Network error: ' + error.message);
+            }
+        }
+
+        function displayLogs(submissions, totalCount) {
+            hideLoading();
+            hideError();
+            
+            document.getElementById('totalCount').textContent = totalCount;
+            
+            if (submissions.length === 0) {
+                showNoData();
+                return;
+            }
+            
+            hideNoData();
+            
+            const tableBody = document.getElementById('logsTableBody');
+            tableBody.innerHTML = '';
+            
+            submissions.forEach(submission => {
+                const row = document.createElement('tr');
+                
+                // Format answers JSON for display
+                const answersFormatted = JSON.stringify(submission.answers_json, null, 2);
+                
+                row.innerHTML = `
+                    <td>${submission.id}</td>
+                    <td class="dev-type">${submission.dev_type}</td>
+                    <td>${submission.property_address}</td>
+                    <td class="answers-cell">${answersFormatted}</td>
+                    <td>${submission.reference_numbers || '-'}</td>
+                    <td class="timestamp">${submission.timestamp}</td>
+                `;
+                
+                tableBody.appendChild(row);
+            });
+            
+            document.getElementById('logsTable').style.display = 'table';
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('logsTable').style.display = 'none';
+            hideNoData();
+            hideError();
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            document.getElementById('errorMessage').textContent = message;
+            document.getElementById('errorMessage').style.display = 'block';
+            hideLoading();
+            hideNoData();
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+
+        function showNoData() {
+            document.getElementById('noData').style.display = 'block';
+            document.getElementById('logsTable').style.display = 'none';
+        }
+
+        function hideNoData() {
+            document.getElementById('noData').style.display = 'none';
+        }
+    </script>
+</body>
+</html>

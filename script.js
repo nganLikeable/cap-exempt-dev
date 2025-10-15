@@ -1574,40 +1574,41 @@ function loadSection(str) {
       // window.scrollTo({top: selectedForm.getBoundingClientRect().top + window.scrollY - offset + 30, behavior: "smooth"});
       let good = 0;
       let unknown = [];
+      let allAnswers = {}; // Collect all answers for logging
+      let referenceNumbers = []; // Collect applicable reference numbers
 
       Object.keys(SEPP[str]).forEach((key) => {
         const question = SEPP[str][key];
         const questionNumber = Number(key) + 1;
 
+        // Collect answers for logging
+        let answer = null;
+        if (question.type === "yes/no") {
+          answer = readBool(question.id);
+          allAnswers[`q${questionNumber}`] = answer === true ? "yes" : answer === false ? "no" : null;
+        } else if (question.type === "numeric") {
+          answer = readNumeric(question.id);
+          allAnswers[`q${questionNumber}`] = answer;
+        } else if (question.type === "dropdown") {
+          answer = readDropdownPerma(question.id);
+          allAnswers[`q${questionNumber}`] = answer;
+        }
+
+        // Collect reference numbers for answered questions
+        if (answer !== null && question.sanitised) {
+          referenceNumbers.push(question.sanitised);
+        }
+
         // Check if question has a check function
         if (question.check) {
           const elem = document.getElementById(String(question.id) + "e");
-          let res;
-
-          if (question.type === "yes/no") {
-            const answer = readBool(question.id);
-            res = question.check(question.id, elem, answer);
-          } else if (question.type === "numeric") {
-            const answer = readNumeric(question.id);
-            res = question.check(question.id, elem, answer);
-          } else if (question.type === "dropdown") {
-            const answer = readDropdownPerma(question.id); // Use readDropdownPerma for better validation
-            res = question.check(question.id, elem, answer);
-          }
+          let res = question.check(question.id, elem, answer);
 
           if (res === 1) unknown.push(questionNumber);
           good |= res;
         } else {
           // For questions without check functions, validate if they're answered
-          let isAnswered = false;
-
-          if (question.type === "yes/no") {
-            isAnswered = readBool(question.id) !== null;
-          } else if (question.type === "numeric") {
-            isAnswered = readNumeric(question.id) !== null;
-          } else if (question.type === "dropdown") {
-            isAnswered = readDropdownPerma(question.id) !== null;
-          }
+          let isAnswered = answer !== null;
 
           if (!isAnswered) {
             unknown.push(questionNumber);
@@ -1618,12 +1619,18 @@ function loadSection(str) {
         }
       });
 
+      // Determine exemption status
+      let exemptionStatus = '';
+      let shouldLogSubmission = false;
+
       // Display results based on validation
       if (good & 2) {
         // Has validation failures
         hide(resultPass);
         show(resultFail);
         hide(resultUnfinished);
+        exemptionStatus = 'not_exempt';
+        shouldLogSubmission = true;
       } else if (good & 1) {
         // Has unanswered questions
         hide(resultPass);
@@ -1633,17 +1640,55 @@ function loadSection(str) {
           unknown.join(", ") +
           ")";
         show(resultUnfinished);
+        exemptionStatus = 'incomplete';
+        // Don't log incomplete submissions
       } else if (good & 4) {
         // All questions answered and valid
         show(resultPass);
         hide(resultFail);
         hide(resultUnfinished);
+        exemptionStatus = 'exempt';
+        shouldLogSubmission = true;
       } else {
         // Fallback case
         hide(resultPass);
         hide(resultFail);
         resultUnfinished.innerText = "⚠ Please answer all questions ⚠";
         show(resultUnfinished);
+        exemptionStatus = 'incomplete';
+        // Don't log incomplete submissions
+      }
+
+      // Log the submission if it's complete
+      if (shouldLogSubmission) {
+        // Add exemption status and metadata to answers
+        allAnswers['exemption_status'] = exemptionStatus;
+        allAnswers['completion_time'] = new Date().toISOString();
+        allAnswers['development_type'] = str; // Store the raw development type (shed, carport, etc.)
+        
+        // Get development type from the current hash
+        const devType = str.charAt(0).toUpperCase() + str.slice(1); // Capitalize first letter
+        
+        // Use a generic property address since it's not part of the SEPP questions
+        const propertyAddress = 'Address not specified in SEPP form';
+        
+        // Log what data we're capturing for debugging
+        console.log('📊 SEPP Form Data to be logged:', {
+          developmentType: devType,
+          propertyAddress: propertyAddress,
+          formAnswers: allAnswers,
+          seppReferences: referenceNumbers,
+          exemptionResult: exemptionStatus
+        });
+        
+        // Submit to database silently in the background
+        submitLog(devType, propertyAddress, allAnswers, referenceNumbers.join('; '))
+          .then(() => {
+            console.log('✅ Exemption check logged successfully');
+          })
+          .catch(error => {
+            console.error('❌ Failed to log exemption check:', error);
+          });
       }
     };
     const permalink = document.createElement("button");
@@ -1735,4 +1780,86 @@ function scrollFunction() {
 function topFunction() {
   document.body.scrollTop = 0; // for safari
   document.documentElement.scrollTop = 0; // for other browsers
+}
+
+async function submitLog(devType, propertyAddress, answers, referenceNumbers) {
+  try {
+    const payload = {
+      development_type: devType,
+      property_address: propertyAddress,
+      answers: answers,
+      reference_number: referenceNumbers,
+    };
+
+    const res = await fetch("/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP error! status: ${res.status}`);
+    }
+
+    const data = await res.json();
+    console.log("✅ Log stored:", data);
+    
+    // Show a very subtle notification to the user (optional)
+    // showNotification("Form submission logged successfully!", "success");
+    
+    return data;
+  } catch (error) {
+    console.error("❌ Failed to submit log:", error);
+    // Silent logging - don't show error notifications to users
+    // showNotification("Failed to log form submission", "error");
+    throw error;
+  }
+}
+
+// Function to show notifications to users
+function showNotification(message, type = "info") {
+  // Remove any existing notifications
+  const existingNotification = document.getElementById('exemption-notification');
+  if (existingNotification) {
+    existingNotification.remove();
+  }
+
+  // Create notification element
+  const notification = document.createElement('div');
+  notification.id = 'exemption-notification';
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    border-radius: 5px;
+    color: white;
+    font-weight: bold;
+    z-index: 10000;
+    transition: opacity 0.3s ease;
+    max-width: 300px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  `;
+  
+  // Set color based on type
+  if (type === "success") {
+    notification.style.backgroundColor = "#28a745";
+  } else if (type === "error") {
+    notification.style.backgroundColor = "#dc3545";
+  } else {
+    notification.style.backgroundColor = "#17a2b8";
+  }
+  
+  notification.textContent = message;
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 5 seconds
+  setTimeout(() => {
+    notification.style.opacity = '0';
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.remove();
+      }
+    }, 300);
+  }, 5000);
 }
